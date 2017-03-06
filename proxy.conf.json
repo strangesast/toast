@@ -1,0 +1,10 @@
+{
+  "/gh" : {
+    "target": "https://github.com",
+    "changeOrigin":true,
+    "pathRewrite": {
+      "^/gh/" : "/"
+    },
+    "secure": true
+  }
+}
