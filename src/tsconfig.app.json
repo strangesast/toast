@@ -6,12 +6,11 @@
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "lib": [
-      "es2016",
+      "es2017",
       "dom"
     ],
     "outDir": "../out-tsc/app",
-    "target": "es6",
-    "module": "es6",
+    "target": "es2017",
     "baseUrl": "",
     "types": []
   },

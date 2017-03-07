@@ -1,19 +1,40 @@
 import { Injectable } from '@angular/core';
+import * as deep from 'deep-diff';
 
-import { modes, init } from './git';
+import { DataService } from './data.service';
+
+import { modes, init, Repo } from './git';
+
+const BODY = {
+  key: 'value value value'
+};
 
 @Injectable()
 export class GitService {
 
-  constructor() {}
+  constructor(private db: DataService) {}
 
   async init() {
-    let repo = {};
-    const name = 'testing';
-    const version = 1;
-    const prefix = 'test';
+    // read ref
+    // get commit tree
 
-    await init(repo, name, version, prefix);
+    // 'git status'
+    //   compare last commit to staging
+    //     find: staging true, compare to head tree
+    //     if present:
+    //       compare hash of staged to head
+    //       match:
+    //         mark not staged
+    //       not:
+    //         mark as modified
+    //     not in head:
+    //       mark as added
+    //     not in staging:
+    //       mark as removed
+    //
+    //   compare staging to work area
+
+    // "working tree"
 
     return repo;
   }
