@@ -18,9 +18,6 @@ export class AppComponent {
   constructor(private renderer: Renderer, private git: GitService, private oauth: OAuthService, private http: Http) {}
 
   async ngOnInit() {
-    this.git.init();
-
-    this.check();
   }
 
   async authorize() {

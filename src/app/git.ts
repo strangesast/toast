@@ -19,6 +19,20 @@ interface Modes {
   commit: number;
 }
 
+interface Author {
+  date: Date;
+  email: string;
+  name: string;
+}
+
+export interface Commit {
+  tree: string;
+  author: Author;
+  committer: Author;
+  parents: string[];
+  message: string;
+}
+
 export const modes: Modes = _modes;
 
 export interface Repo {
