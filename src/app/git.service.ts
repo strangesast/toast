@@ -2,6 +2,8 @@ import { Injectable } from '@angular/core';
 import { Resolve } from '@angular/router';
 import * as deep from 'deep-diff';
 
+import { Observable } from 'rxjs';
+
 import { DataService } from './data.service';
 
 import { User, Group, Job, Folder, Instance, Component } from './models';
@@ -71,6 +73,7 @@ export class GitService implements Resolve<any> {
       let job = await db.jobs.get({ shortname: JOB.shortname });
       if (!job) {
         job = Job.create(JOB)
+        job.state = 2; // commited
         job.id = await db.jobs.add(job);
       }
 
@@ -96,63 +99,36 @@ export class GitService implements Resolve<any> {
         }
       }
 
-      let rootFolders = await Promise.all(job.folders.order.concat('component').map(async(type) => {
-        let folder = await db.folders.get({ name: 'root', type });
-        if (!folder) {
-          folder = Folder.create({
-            name: 'root',
-            type,
-            job: job.id,
-            state: 1
-          });
+      if (job.folders.order.length + 1 != Object.keys(job.folders.roots).length) {
+        let types = job.folders.order.concat('component');
+        for (let i=0, type; type=types[i], i<types.length; i++) {
+          let id = job.folders.roots[type]
+          if (id) continue;
+          let folder = Folder.create({ name: 'root', type, job: job.id, state: 2 });
           folder.id = await db.folders.add(folder);
-          job.folders.roots[folder.type] = folder.id;
+          job.folders.roots[type] = folder.id;
         }
-        return folder;
-      }));
+      }
 
-      let foldersTree = await repo.saveAs('tree', (await Promise.all(rootFolders.map(async(folder) => {
-        let blob = await repo.saveAs('text', folder.toString());
-        folder.hash = blob;
-        let tree = await repo.saveAs('tree', {
-          [folder.id + '.json']: { mode: modes.blob, hash: blob }
-        });
+      let { ids, docs } = await this.descendants(db.folders, job.folderRoots, true);
 
-        return { name: folder.type, hash: tree, mode: modes.tree };
+      for (let i=0, id; id=ids[i], i < ids.length; i++) {
+        docs[id] = await repo.saveAs('text', docs[id].toString());
+      }
 
-      }))));
+      let treeObj = {};
+      for (let i=0, id; id=ids[i], i < ids.length; i++) {
+        treeObj[id + '.json'] = { hash: docs[id], mode: modes.blob };
+      }
 
+      let foldersTree = await repo.saveAs('tree', treeObj);
       let componentsTree = await repo.saveAs('tree', {});
       let instancesTree = await repo.saveAs('tree', {});
 
       let jobBlob = await repo.saveAs('text', job.toString());
 
-      job.state = 1;
       job.hash = jobBlob;
       await db.jobs.put(job);
-
-      /*
-
-      repo/
-        folders/
-          phase/
-            { id, parent, name, ... }
-
-          building/
-            { id, parent, name, ... }
-
-          component/
-            { id, parent, name, ... }
-
-        components/
-          { id, folder, name, parent, ... }
-
-        instances/
-          { id, folders, name, ref, ... }
-
-        job.json
-
-      */
 
       let rootTree = await repo.saveAs('tree', {
         'folders': { mode: modes.tree, hash: foldersTree },
@@ -190,119 +166,125 @@ export class GitService implements Resolve<any> {
 
     let job = await db.jobs.get(tree['job.json'].id);
 
-    job.description = 'new description ' + Math.floor(Math.random()*100);
-    job.state = 0;
+    let firstFolderId = Object.keys(tree.folders)[0].slice(0, -5);
+    await db.folders.update(firstFolderId, {
+      description: 'some new description ' + Math.floor(Math.random() * 100),
+      state: 1
+    });
 
-    await db.jobs.put(job);
+    await db.jobs.update(job.id, {
+      description: 'new description ' + Math.floor(Math.random()*100),
+      state: 1
+    });
 
-    this.status(job.id, 'master');
+    this.status(job, 'master', true);
 
     await new Promise((r) => setTimeout(r, 1000));
 
     job.state = 1;
     console.log('saving...');
-    
-
-    // read ref
-    // get commit tree
-
-    // 'git status'
-    //   compare last commit to staging
-    //     find: staging true, compare to head tree
-    //     if present:
-    //       compare hash of staged to head
-    //       match:
-    //         mark not staged
-    //       not:
-    //         mark as modified
-    //     not in head:
-    //       mark as added
-    //     not in staging:
-    //       mark as removed
-    //
-    //   compare staging to work area
-
-    // "working tree"
 
     return repo;
   }
 
-  // compare stage to head (ref)
-  async status(jobId, ref) {
+  async status(jobId, ref, diff=false) {
     let db = this.db;
     let repo = this.repo;
-
-    let job = await db.jobs.get(jobId);
-
-    let folderTypes = job.folders.order.concat('component')
-
-    let hash = await repo.readRef('master')
-    let commit = hash && await repo.loadAs('commit', hash);
-    let root = commit && await repo.loadAs('tree', commit.tree);
-    let dir = root && await repo.loadAs('tree', root.folders.hash);
-
-    folderTypes.map(async(type) => {
-      let rootId = job.folders.roots[type];
-
-      let head = await repo.loadAs('tree', dir[type].hash);
-      // remove .json
-      let headIds = Object.keys(head).map(k => k.slice(0, -5)).sort(comparer);
-
-      let { ids, docs: folders } = await this.descendants(db.folders, rootId, true);
-
-      // staged but not present in head (could be moved to end)
-      let unattached = await db.folders.where({ type, job: job.id, state: 1 }).filter(f => ids.indexOf(f.id) == -1).toArray();
-
-      ids.sort(comparer);
-      console.log('here', headIds, ids, unattached);
-
-    });
-
-
-    /*
-
-    // should use job.shortname for prefix
-    let commitHash = await repo.readRef('master');
-
-    if (commitHash) {
-      let commit = await repo.loadAs('commit', commitHash);
-
-      let tree = await repo.loadAs('tree', commit.tree);
-
-      let folders = await repo.loadAs('tree', tree.folders.hash);
-
-      await Promise.all(job.folders.order.concat('component').map(async(type) => {
-        let id = job.folders.roots[type];
-
-        let l = await this.getDescendants(db.folders, id);
-
-        let obj = (await repo.loadAs('tree', folders[type].hash));
-
-        let ids = Object.keys(obj).filter(k => obj[k].mode === modes.blob).map(k => k.slice(0, -5)).sort(comparer)
-
-        console.log('ids1', l.map(k => k.id));
-        console.log('ids2', ids);
-
-      }));
-
-    } else {
-
+    let job = typeof jobId === 'string' ? (await db.jobs.get(jobId)) : jobId;
+    if (!job || !(job instanceof Job)) {
+      throw new Error('job with that id has not been loaded');
     }
-    */
 
-    // load head
+    let commitHash = await repo.readRef(ref);
+    if (!commitHash) {
+      throw new Error(`that ref does not exist ("${ref}")`);
+    }
+    let commit = await repo.loadAs('commit', commitHash);
 
-    
-    // load stagin
+    let rootTree = await repo.loadAs('tree', commit.tree);
 
+    let { ids: inFolderTree } = await this.descendants(db.folders, job.folderRoots, true);
+    let staged = await this.stageStatus(job);
 
-    let folders = await db.folders.where({ job: job.id }).toArray();
+    console.log(await this.compare(repo, rootTree, inFolderTree, job.folders.order, staged, diff));
+    console.log(await this.compare(repo, rootTree, inFolderTree, job.folders.order, await this.workStatus(job), diff));
 
+  }
+
+  async compare(repo, rootTree, inFolderTree, jobFolders, stage, diff = false) {
+    let ret = {};
+    for (let prop in stage) {
+      let fn, val;
+      if (prop == 'folders') {
+        fn = (el) => inFolderTree.indexOf(el['id']) != -1
+
+      }
+      if (prop == 'components') {
+        fn = (el) => el['parent'] || inFolderTree.indexOf(el['folder']) != -1
+      }
+      if (prop == 'instances') {
+        fn = (el) => jobFolders.every(n => inFolderTree.indexOf(el.folders[n]) != -1)
+      }
+      if (prop == 'folders' || prop == 'components' || prop == 'instances') {
+        let tree = await repo.loadAs('tree', rootTree[prop].hash);
+        let ids = Object.keys(tree)
+          .filter(name => tree[name].mode === modes.blob)
+          .map(name => name.slice(0, -5));
+
+        await Promise.all(ids.map(async(id) => tree[id + '.json'].val = JSON.parse(await repo.loadAs('text', tree[id + '.json'].hash))));
+        val = { created: [], modified: [], detached: [] };
+        stage[prop].forEach((el) =>
+          (fn(el) ? (ids.indexOf(el.id) != -1 ? val.modified : val.created) : val.detached).push((diff && ids.indexOf(el.id) != -1) ? deep.diff(tree[el.id + '.json'].val, el.toJSON()) : el), 
+        );
+      }
+      if (prop == 'job') {
+        val = stage[prop];
+      }
+      ret[prop] = val;
+    }
+    return ret;
+  }
+
+  async stageStatus(jobId) {
+    // job
+    let db = this.db;
+    let job = typeof jobId === 'string' ? (await db.jobs.get(jobId)) : jobId;
+    if (!job || !(job instanceof Job)) throw new Error('job with that id has not been loaded');
+    let q = { state: 1, job: job.id };
+    let names = ['folders', 'components', 'instances'];
+    let ret: any = {};
+    ret.job = job.state == 1 && job;
+    await Promise.all(names.map(async(n) => ret[n] = await db[n].where(q).toArray()))
+    return ret;
+  }
+
+  async workStatus(jobId) {
+    // job
+    let db = this.db;
+    let job = typeof jobId === 'string' ? (await db.jobs.get(jobId)) : jobId;
+    if (!job || !(job instanceof Job)) throw new Error('job with that id has not been loaded');
+    let q = { state: 0, job: job.id };
+    let names = ['folders', 'components', 'instances'];
+    let ret: any = {};
+    ret.job = job.state == 0 && job;
+    await Promise.all(names.map(async(n) => ret[n] = await db[n].where(q).toArray()))
+    return ret;
   }
 
   async descendants(table, rootId, includeRoot = false) {
     let ids, queue, docs = {};
-    ids = queue = [rootId];
+    if (Array.isArray(rootId)) {
+      ids = queue = rootId;
+    } else if (typeof rootId === 'string') {
+      ids = queue = [rootId];
+    } else {
+      throw new Error('invalid rootId type');
+    }
+
+    if (includeRoot) {
+      await Promise.all(queue.map(async(id) => docs[id] = await table.get(id)));
+    }
+
     do {
       queue = (await table.where('parent').anyOf(queue).toArray()).map(obj => (docs[obj.id] = obj).id);
       if (queue.some(id => ids.indexOf(id) != -1)) throw new Error('parent/child loop');
@@ -316,4 +298,24 @@ export class GitService implements Resolve<any> {
     return { ids, docs };
   }
 
+  async createJob(name, description, type, owner, group) {
+    let db = this.db;
+
+    let job = Job.create({ name, description, type, owner, group });
+    job.folders = { roots: {}, order: [] };
+    
+    if (type === 'job') {
+      job.folders.order = ['phase', 'building'];
+    }
+
+    job.id = await db.jobs.add(job);
+
+    // create root folders
+    await Promise.all(job.folderRoots.map(async(type) => {
+      let folder = new Folder(job.id, 'root', '', type, null);
+      job.folders.roots[type] = folder.id = await db.folders.add(folder);
+    }));
+
+    return job;
+  }
 }

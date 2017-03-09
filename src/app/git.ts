@@ -39,6 +39,8 @@ export interface Repo {
   refPrefix: string;
   saveAs(type: string, body: any, callback?: (err: any, hash: string, body: any) => any, forcedHash?: string): Promise<string>;
   loadAs(type: string, hash: string): Promise<any>;
+  loadRaw(hash: string): Promise<any>;
+  loadManyRaw(hashes: string[]): Promise<any>;
   readRef(ref: string): Promise<string>;
   updateRef(ref: string, hash: string, callback?: () => any): Promise<void>;
   hasHash(): Promise<boolean>;
