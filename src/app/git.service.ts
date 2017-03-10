@@ -7,8 +7,18 @@ import { Observable } from 'rxjs';
 import { DataService } from './data.service';
 
 import { User, Group, Job, Folder, Instance, Component } from './models';
-import { modes, init, Repo, Commit } from './git';
+import { calcHash, modes, init, Repo, Commit } from './git';
 import { startsWith } from './indexeddb';
+
+class Status {
+  constructor(public id: string, public current: any, public previous?: any, public detached?: boolean) {}
+
+  get diff() { return deep.diff(this.previous, this.current); } 
+  get status() {
+    return (this.current && this.previous) ? (this.diff ? 'modified' : 'same') : !this.previous ? 'created' : 'deleted';
+  }
+};
+
 let GROUP = {
   shortname: 'testg'
 };
@@ -56,16 +66,10 @@ export class GitService implements Resolve<any> {
 
   async init() {
 
-    let repo = this.repo = <Repo>{};
-
     // repo, name, version, prefix
     let prefix = 'toast';
-    let gitdb = this.gitdb = await init(repo, 'test', 1, prefix);
+    let repo = await init(prefix, 'test', 1);
     let db = this.db;
-
-    //let store = gitdb.transaction(['refs'], 'readonly').objectStore('refs');
-    //let refs = (await startsWith(store, prefix)).map(({ hash }) => hash);
-
 
     let master = await repo.readRef('master');
 
@@ -149,22 +153,28 @@ export class GitService implements Resolve<any> {
 
     let commit = await repo.loadAs('commit', master)
 
-    let handleTree = async(hash) => {
-      let obj = await repo.loadAs('tree', hash);
-      for (let name in obj) {
-        let t = modes.toType(obj[name].mode);
-        if (t === 'tree') {
-          obj[name] = await handleTree(obj[name].hash);
-        } else if (t === 'blob') {
-          obj[name] = JSON.parse(await repo.loadAs('text', obj[name].hash));
-        }
-      }
-      return obj;
-    };
+    //let handleTree = async(hash) => {
+    //  let obj = await repo.loadAs('tree', hash);
+    //  for (let name in obj) {
+    //    let t = modes.toType(obj[name].mode);
+    //    if (t === 'tree') {
+    //      obj[name] = await handleTree(obj[name].hash);
+    //    } else if (t === 'blob') {
+    //      let text = await repo.loadAs('text', obj[name].hash);
+    //      console.log('name', name, 'text', text);
+    //      obj[name] = JSON.parse(text);
+    //    }
+    //  }
+    //  return obj;
+    //};
 
-    let tree = await handleTree(commit.tree);
+    let tree = await repo.loadAs('tree', commit.tree);
+    console.log('tree', tree);
 
-    let job = await db.jobs.get(tree['job.json'].id);
+    let jobText = await repo.loadAs('text', tree['job.json'].hash);
+    console.log('text', jobText);
+    let jobId = JSON.parse(jobText).id;
+    let job = await db.jobs.get(jobId);
 
     let firstFolderId = Object.keys(tree.folders)[0].slice(0, -5);
     await db.folders.update(firstFolderId, {
@@ -177,113 +187,112 @@ export class GitService implements Resolve<any> {
       state: 1
     });
 
-    this.status(job, 'master', true);
+    let newFolder = await db.folders.where('name').startsWithIgnoreCase('test folder').first();
+    if (!newFolder) {
+      newFolder = new Folder(job.id, 'test folder ' + Math.floor(Math.random()*100), '', 'building', job.folders.roots[job.folders.order[0]]);
+      newFolder.state = 1;
+      await db.folders.add(newFolder);
+    }
 
-    await new Promise((r) => setTimeout(r, 1000));
+    this.checkStatus(job, repo);
 
-    job.state = 1;
-    console.log('saving...');
-
-    return repo;
+    return this.status(job, repo, 'toast');
   }
 
-  async status(jobId, ref, diff=false) {
+  // compare the specified job to ref (if specified)
+  async status(jobId, repo, ref?) {
     let db = this.db;
-    let repo = this.repo;
-    let job = typeof jobId === 'string' ? (await db.jobs.get(jobId)) : jobId;
-    if (!job || !(job instanceof Job)) {
-      throw new Error('job with that id has not been loaded');
+    let job;
+    if (jobId instanceof Job) {
+      job = jobId;
+      jobId = job.id;
+    } else if (typeof jobId === 'string') {
+      job = await db.jobs.get(jobId);
+    } else {
+      throw new Error('invalid job type');
     }
+
+    let commitHash = repo && await repo.readRef(ref || 'master');
+    let commit = commitHash && await repo.loadAs('commit', commitHash);
+    let tree = commit && await repo.loadAs('tree', commit.tree);
+
+    let status:any = {};
+    // job
+    status.job = new Status(jobId, job && job.toJSON(), tree && JSON.parse((await repo.loadAs('text', tree['job.json'].hash)) || null));
+
+    let { ids: inWorkingFolderTree } = await this.descendants(db.folders, job.folderRoots, true);
+
+    // folders
+    status.folders = await this.compare(
+      jobId,
+      repo,
+      db.folders,
+      tree && await repo.loadAs('tree', tree['folders'].hash),
+      1,
+      (obj) => inWorkingFolderTree.indexOf(obj.id) != -1
+    );
+
+    // instances
+    status.instances = await this.compare(
+      jobId,
+      repo,
+      db.instances,
+      tree && await repo.loadAs('tree', tree['instances'].hash),
+      1,
+      (obj) => job.folders.order.every(n => inWorkingFolderTree.indexOf(obj.folders[n]) != -1)
+    );
+
+    // components
+    let componentTree = tree && await repo.loadAs('tree', tree['components'].hash);
+    status.components = await this.compare(
+      jobId,
+      repo,
+      db.components,
+      componentTree,
+      1,
+      (obj) => obj.parent || inWorkingFolderTree.indexOf(obj.folder) != -1
+    );
+
+    return status;
+  }
+
+  async compare(job: string, repo, table, tree, state: number, detachedFn?) {
+    let q = { state, job };
+    let staged = await table.where(q).toArray();
+    let map = {};
+    if (tree) {
+      let hashes = staged.map(({ id }) => (tree[id+'.json'] || {}).hash).filter(h => h);
+      (await repo.loadManyRaw(hashes)).forEach(({ hash, body }) => {
+        let obj = JSON.parse(String.fromCharCode(...body));
+        map[obj.id] = obj;
+      });
+    }
+    return staged.map(current => new Status(job, current.toJSON(), map[current.id], detachedFn && detachedFn(current)));
+  }
+
+  async checkStatus(job:string|Job, repo, ref='master', fix=false) {
+    let db = this.db;
+    let jobId = typeof job === 'string' ? job : job.id;
+    job = typeof job === 'string' ? await db.jobs.get(jobId) : job;
 
     let commitHash = await repo.readRef(ref);
-    if (!commitHash) {
-      throw new Error(`that ref does not exist ("${ref}")`);
-    }
     let commit = await repo.loadAs('commit', commitHash);
+    let tree = await repo.loadAs('tree', commit.tree);
 
-    let rootTree = await repo.loadAs('tree', commit.tree);
+    // checking job...
+    let head = tree['job.json'].hash;
+    let working = calcHash(job.toString());
 
-    let { ids: inFolderTree } = await this.descendants(db.folders, job.folderRoots, true);
-    let staged = await this.stageStatus(job);
-
-    console.log(await this.compare(repo, rootTree, inFolderTree, job.folders.order, staged, diff));
-    console.log(await this.compare(repo, rootTree, inFolderTree, job.folders.order, await this.workStatus(job), diff));
-
-  }
-
-  async compare(repo, rootTree, inFolderTree, jobFolders, stage, diff = false) {
-    let ret = {};
-    for (let prop in stage) {
-      let fn, val;
-      if (prop == 'folders') {
-        fn = (el) => inFolderTree.indexOf(el['id']) != -1
-
-      }
-      if (prop == 'components') {
-        fn = (el) => el['parent'] || inFolderTree.indexOf(el['folder']) != -1
-      }
-      if (prop == 'instances') {
-        fn = (el) => jobFolders.every(n => inFolderTree.indexOf(el.folders[n]) != -1)
-      }
-      if (prop == 'folders' || prop == 'components' || prop == 'instances') {
-        let tree = await repo.loadAs('tree', rootTree[prop].hash);
-        let ids = Object.keys(tree)
-          .filter(name => tree[name].mode === modes.blob)
-          .map(name => name.slice(0, -5));
-
-        await Promise.all(ids.map(async(id) => tree[id + '.json'].val = JSON.parse(await repo.loadAs('text', tree[id + '.json'].hash))));
-        val = { created: [], modified: [], detached: [] };
-        stage[prop].forEach((el) =>
-          (fn(el) ? (ids.indexOf(el.id) != -1 ? val.modified : val.created) : val.detached).push((diff && ids.indexOf(el.id) != -1) ? deep.diff(tree[el.id + '.json'].val, el.toJSON()) : el), 
-        );
-      }
-      if (prop == 'job') {
-        val = stage[prop];
-      }
-      ret[prop] = val;
-    }
-    return ret;
-  }
-
-  async stageStatus(jobId) {
-    // job
-    let db = this.db;
-    let job = typeof jobId === 'string' ? (await db.jobs.get(jobId)) : jobId;
-    if (!job || !(job instanceof Job)) throw new Error('job with that id has not been loaded');
-    let q = { state: 1, job: job.id };
-    let names = ['folders', 'components', 'instances'];
-    let ret: any = {};
-    ret.job = job.state == 1 && job;
-    await Promise.all(names.map(async(n) => ret[n] = await db[n].where(q).toArray()))
-    return ret;
-  }
-
-  async workStatus(jobId) {
-    // job
-    let db = this.db;
-    let job = typeof jobId === 'string' ? (await db.jobs.get(jobId)) : jobId;
-    if (!job || !(job instanceof Job)) throw new Error('job with that id has not been loaded');
-    let q = { state: 0, job: job.id };
-    let names = ['folders', 'components', 'instances'];
-    let ret: any = {};
-    ret.job = job.state == 0 && job;
-    await Promise.all(names.map(async(n) => ret[n] = await db[n].where(q).toArray()))
-    return ret;
+    console.log(head, working);
   }
 
   async descendants(table, rootId, includeRoot = false) {
     let ids, queue, docs = {};
-    if (Array.isArray(rootId)) {
-      ids = queue = rootId;
-    } else if (typeof rootId === 'string') {
-      ids = queue = [rootId];
-    } else {
+    if (!Array.isArray(rootId) && typeof rootId !== 'string') {
       throw new Error('invalid rootId type');
     }
-
-    if (includeRoot) {
-      await Promise.all(queue.map(async(id) => docs[id] = await table.get(id)));
-    }
+    ids = queue = typeof rootId === 'string' ? [rootId] : rootId;
+    if (includeRoot) await Promise.all(queue.map(async(id) => docs[id] = await table.get(id)));
 
     do {
       queue = (await table.where('parent').anyOf(queue).toArray()).map(obj => (docs[obj.id] = obj).id);
