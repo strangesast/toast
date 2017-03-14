@@ -3,15 +3,17 @@ import { Injectable } from '@angular/core';
 import Dexie from 'dexie';
 import 'dexie-observable';
 
-import { User, Group, Folder, Instance, Component, Job } from './models';
+import { getHash } from './git';
+
+import { User, Group, FolderElement, InstanceElement, ComponentElement, Collection } from './models';
 
 @Injectable()
 export class DataService extends Dexie {
 
-  jobs: Dexie.Table<Job, string>;
-  instances: Dexie.Table<Instance, string>;
-  components: Dexie.Table<Component, string>;
-  folders: Dexie.Table<Folder, string>;
+  collections: Dexie.Table<Collection, string>;
+  instances: Dexie.Table<InstanceElement, string>;
+  components: Dexie.Table<ComponentElement, string>;
+  folders: Dexie.Table<FolderElement, string>;
   users: Dexie.Table<User, string>;
   groups: Dexie.Table<Group, string>;
 
@@ -20,19 +22,62 @@ export class DataService extends Dexie {
 
     // indecies
     this.version(1).stores({
-      jobs: '$$id, &shortname, name, owner, group',
-      components: '$$id, parent, job, name, [job+state]',
-      instances: '$$id, ref, job, name, folders, [job+state]',
-      folders: '$$id, parent, job, name, type, [name+type], [job+state], [job+type+state]',
-      users: '&username, name, email',
-      groups: '&shortname'
+      collections: '[hash+id], &hash, id, [id+priority], modified, name,      state,       &shortname, owner, group',
+      components:  '[hash+id], &hash, id, [id+priority], modified, name, job, [job+state], parent, folder',
+      folders:     '[hash+id], &hash, id, [id+priority], modified, name, job, [job+state], parent, type',
+      instances:   '[hash+id], &hash, id, [id+priority], modified, name, job, [job+state], folders.building, folders.phase, [folders.building+folders.phase]',
+      users: '&username, name, email, modified',
+      groups: '&shortname, modified'
     });
 
-    this.jobs.mapToClass(Job);
-    this.components.mapToClass(Component);
-    this.instances.mapToClass(Instance);
-    this.folders.mapToClass(Folder);
+    this.collections.mapToClass(Collection);
+    this.components.mapToClass(ComponentElement);
+    this.instances.mapToClass(InstanceElement);
+    this.folders.mapToClass(FolderElement);
     this.users.mapToClass(User);
     this.groups.mapToClass(Group);
+  }
+
+  generateId() {
+    return Dexie.Observable.createUUID();
+  }
+
+  async save(obj, historyLedger?, ignoreValidation=false) {
+    let table: Dexie.Table<any, string> =
+      obj instanceof Collection ? this.collections :
+      obj instanceof ComponentElement ? this.components :
+      obj instanceof FolderElement ? this.folders :
+      obj instanceof InstanceElement ? this.instances :
+      obj instanceof User ? this.users :
+      obj instanceof Group ? this.groups :
+      null;
+
+    if (!table) {
+      throw new Error('cannot save that object');
+    }
+
+    let date = new Date();
+
+    if (!obj.id) {
+      obj.id = this.generateId();
+      obj.created = date;
+    }
+
+    obj.modified = date;
+    obj.hash = getHash(obj.toString());
+
+    let previous = await table.get(obj.pk);
+
+    if (!obj.valid && !ignoreValidation) {
+      throw new Error('saving invalid object');
+    }
+
+    let key = await table.put(obj);
+
+    if (historyLedger) {
+      historyLedger.add(key, previous);
+    }
+
+    return key;
   }
 }

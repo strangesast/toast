@@ -97,3 +97,7 @@ export async function init(prefix: string, name?: string, version?: number): Pro
   formats(repo);
   return repo;
 }
+
+export function getHash(body, type='blob') {
+  return sha1(codec.frame({ type, body: bodec.fromUnicode(body) }));
+}

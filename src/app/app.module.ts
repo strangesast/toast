@@ -12,9 +12,18 @@ import { OAuthService } from './oauth.service';
 import { AppComponent } from './app.component';
 import { OAuthComponent } from './oauth/oauth.component';
 import { MainComponent } from './main/main.component';
+import { ListComponent } from './list/list.component';
 
 const routes: Routes = [
-  { path: '', component: MainComponent, resolve: { git: GitService } },
+  { path: '',
+    component: MainComponent,
+    resolve: { git: GitService },
+    children: [
+      { path: 'list',
+        component: ListComponent
+      }
+    ]
+  },
   { path: 'oauth', component: OAuthComponent }
 ];
 
@@ -22,7 +31,8 @@ const routes: Routes = [
   declarations: [
     AppComponent,
     OAuthComponent,
-    MainComponent
+    MainComponent,
+    ListComponent
   ],
   imports: [
     BrowserModule,
