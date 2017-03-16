@@ -39,14 +39,17 @@ export class GitService implements Resolve<any> {
   gitdb: IDBDatabase;
   repo: Repo;
 
+  dbName = 'testing';
+  dbVersion = 1;
+
   constructor(private db: DataService) {}
 
   resolve() {
     //return this.init();
   }
 
-  async init() {
-    let db = this.db;
+  async init(prefix) {
+    return init(prefix, this.dbName, this.dbVersion);
     /*
     // repo, name, version, prefix
     let prefix = 'toast';
