@@ -45,6 +45,7 @@ const routes: Routes = [
   providers: [
     OAuthService,
     GitService,
+    ObjectService
   ],
   bootstrap: [AppComponent]
 })

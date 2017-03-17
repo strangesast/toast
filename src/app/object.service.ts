@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { Resolve } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
 
 import { GitService } from './git.service';
@@ -7,11 +8,14 @@ import { Collection } from './models';
 import { Repo } from './git';
 
 @Injectable()
-export class ObjectService {
+export class ObjectService implements Resolve<null> {
   currentJob: BehaviorSubject<Collection>;
   repo: Repo;
 
   constructor(private git: GitService) { }
+
+  async resolve() {
+  }
 
   async initializeJob(job) {
     let currentJob = this.currentJob && this.currentJob.getValue();
