@@ -22,10 +22,10 @@ export class DataService extends Dexie {
 
     // indecies
     this.version(1).stores({
-      collections: '[hash+id], &hash, id, [id+priority], modified, name,      state,       &shortname, owner, group',
-      components:  '[hash+id], &hash, id, [id+priority], modified, name, job, [job+state], parent, folder',
-      folders:     '[hash+id], &hash, id, [id+priority], modified, name, job, [job+state], parent, type',
-      instances:   '[hash+id], &hash, id, [id+priority], modified, name, job, [job+state], folders.building, folders.phase, [folders.building+folders.phase]',
+      collections: '[hash+id], hash, id, [id+priority], modified, name,      state,       &shortname, owner, group',
+      components:  '[hash+id], hash, id, [id+priority], modified, name, job, [job+state], parent, folder',
+      folders:     '[hash+id], hash, id, [id+priority], modified, name, job, [job+state], parent, type',
+      instances:   '[hash+id], hash, id, [id+priority], modified, name, job, [job+state], folders.building, folders.phase, [folders.building+folders.phase]',
       users: '&username, name, email, modified',
       groups: '&shortname, modified'
     });

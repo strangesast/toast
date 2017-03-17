@@ -1,4 +1,8 @@
+import { hashObject } from './util';
+import Dexie from 'dexie';
+import 'dexie-observable';
 const notUrlSafe = /[^a-zA-Z0-9-_\.~]/g;
+const COMPONENT_FOLDER_NAME = 'component';
 class BaseElement {
   id?: string;
   hash: string = '';
@@ -8,16 +12,25 @@ class BaseElement {
   modified: Date; // based on commit
   created: Date; // based on commit
 
-  constructor(public job: string, public name: string, public description: string) {}
+  constructor(public job: string, public name: string, public description: string) {
+    this.id = Dexie.Observable.createUUID();
+    this.updateHash();
+    this.modified = new Date();
+  }
 
-  static props = ['id', 'job', 'parent', 'name', 'description', 'basedOn']; 
+  static props = ['job', 'parent', 'name', 'description', 'basedOn']; 
   toJSON() {
     let obj = {};
     (<any>this.constructor).props.forEach(prop => obj[prop] = this[prop]);
     return obj;
   }
+
   toString() {
     return JSON.stringify(this.toJSON());
+  }
+
+  updateHash() {
+    return this.hash = hashObject('blob', this.toString());
   }
 
   get pk() {
@@ -26,7 +39,13 @@ class BaseElement {
 }
 
 export class FolderElement extends BaseElement {
-  constructor(job, name, description, public type: string, public parent: string) {
+  constructor(
+    job: string,
+    name: string,
+    description: string,
+    public type: string,
+    public parent: string = null
+  ) {
     super(job, name, description);
   }
 
@@ -45,7 +64,13 @@ export class FolderElement extends BaseElement {
 }
 
 export class ComponentElement extends BaseElement {
-  constructor(job, name, description, public folder: string, public parent: string = null) {
+  constructor(
+    job: string,
+    name: string,
+    description: string,
+    public folder: string,
+    public parent: string = null
+  ) {
     super(job, name, description);
   }
 
@@ -103,11 +128,14 @@ export class Collection {
     public group?: string,
     folderTypes?: string[]
   ) {
-    this.shortname = (shortname || name.split(/[\s_-]+/).join('-')).replace(notUrlSafe, '');
-    this.folders = { order: type === 'job' ? ['phase', 'building'] : [], roots: {} };
+    this.id = Dexie.Observable.createUUID();
+    this.shortname = (shortname || name.split(/[\s_-]+/).join('-')).replace(notUrlSafe, '').toLowerCase().slice(0, 50);
+    this.folders = { order: type === 'job' ? folderTypes || ['phase', 'building'] : [], roots: {} };
+    this.updateHash();
+    this.modified = new Date();
   }
 
-  static props = ['id', 'name', 'shortname', 'description', 'type', 'owner', 'group', 'folders', 'basedOn'];  // what's tracked by git
+  static props = ['name', 'shortname', 'description', 'type', 'owner', 'group', 'folders', 'basedOn'];  // what's tracked by git
   static create(obj) {
     return Object.assign(
       Object.create(Collection.prototype),
@@ -126,6 +154,10 @@ export class Collection {
     return JSON.stringify(this.toJSON());
   }
 
+  updateHash() {
+    return this.hash = hashObject('blob', this.toString());
+  }
+
   get valid() {
     if (!notUrlSafe.test(this.shortname) && this.owner && this.group && this.folders && true) {
       return true;
@@ -135,7 +167,7 @@ export class Collection {
 
   get folderRoots() {
     let f = this.folders;
-    return f.order.length + 1 == Object.keys(f.roots).length ? f.order.concat('component').map(t => f.roots[t]) : null;
+    return f.order.length + 1 == Object.keys(f.roots).length ? f.order.concat(COMPONENT_FOLDER_NAME).map(t => f.roots[t]) : null;
   }
 
   get initialized() {
