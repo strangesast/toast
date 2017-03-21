@@ -3,11 +3,12 @@ import Dexie from 'dexie';
 import 'dexie-observable';
 const notUrlSafe = /[^a-zA-Z0-9-_\.~]/g;
 const COMPONENT_FOLDER_NAME = 'component';
+type ElementState = 'unstaged'|'staged'|'commited';
 class BaseElement {
   id?: string;
   hash: string = '';
   basedOn: string;
-  state: number = 0; // unstaged: 0, staged: 1, unchanged: 2 (hash matches content)
+  state: ElementState = 'unstaged'; // unstaged: 0, staged: 1, unchanged: 2 (hash matches content)
   priority: number = 0; // reverse 0 > 1
   modified: Date; // based on commit
   created: Date; // based on commit
@@ -57,7 +58,7 @@ export class FolderElement extends BaseElement {
   static create(obj) {
     return Object.assign(
       Object.create(FolderElement.prototype),
-      { description: '', hash: '', state: 0, parent: null },
+      { description: '', hash: '', state: 'unstaged', parent: null },
       obj
     );
   }
@@ -82,7 +83,7 @@ export class ComponentElement extends BaseElement {
   static create(obj) {
     return Object.assign(
       Object.create(ComponentElement.prototype),
-      { description: '', hash: '', state: 0, parent: null },
+      { description: '', hash: '', state: 'unstaged', parent: null },
       obj
     );
   }
@@ -101,7 +102,7 @@ export class InstanceElement extends BaseElement {
   static create(obj) {
     return Object.assign(
       Object.create(InstanceElement.prototype),
-      { description: '', hash: '', state: 0 },
+      { description: '', hash: '', state: 'unstaged' },
       obj
     );
   }
@@ -115,7 +116,7 @@ export class Collection {
   }
   hash: string = '';
   basedOn: string;
-  state: number = 0;
+  state: ElementState = 'unstaged';
   modified: Date;   // based on commit
   created: Date;    // based on commit
 
@@ -130,7 +131,7 @@ export class Collection {
   ) {
     this.id = Dexie.Observable.createUUID();
     this.shortname = (shortname || name.split(/[\s_-]+/).join('-')).replace(notUrlSafe, '').toLowerCase().slice(0, 50);
-    this.folders = { order: type === 'job' ? folderTypes || ['phase', 'building'] : [], roots: {} };
+    this.folders = { order: (type === 'job' ? folderTypes || ['phase', 'building'] : []), roots: {} };
     this.updateHash();
     this.modified = new Date();
   }
@@ -139,7 +140,7 @@ export class Collection {
   static create(obj) {
     return Object.assign(
       Object.create(Collection.prototype),
-      { type: 'job', state: 0, hash: '', folders: { order: obj.type === 'job' ? ['phase', 'building'] : [], roots: {} } },
+      { type: 'job', state: 'unstaged', hash: '', folders: { order: obj.type === 'job' ? ['phase', 'building'] : [], roots: {} } },
       obj
     );
   }
