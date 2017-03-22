@@ -3,12 +3,12 @@ import Dexie from 'dexie';
 import 'dexie-observable';
 const notUrlSafe = /[^a-zA-Z0-9-_\.~]/g;
 const COMPONENT_FOLDER_NAME = 'component';
-type ElementState = 'unstaged'|'staged'|'commited';
+type ElementState = 'unstaged'|'staged'|'committed';
 class BaseElement {
   id?: string;
   hash: string = '';
   basedOn: string;
-  state: ElementState = 'unstaged'; // unstaged: 0, staged: 1, unchanged: 2 (hash matches content)
+  state: ElementState = 'unstaged';
   priority: number = 0; // reverse 0 > 1
   modified: Date; // based on commit
   created: Date; // based on commit
@@ -17,9 +17,10 @@ class BaseElement {
     this.id = Dexie.Observable.createUUID();
     this.updateHash();
     this.modified = new Date();
+    this.created = new Date();
   }
 
-  static props = ['job', 'parent', 'name', 'description', 'basedOn']; 
+  static props = ['parent', 'name', 'description', 'basedOn']; 
   toJSON() {
     let obj = {};
     (<any>this.constructor).props.forEach(prop => obj[prop] = this[prop]);
@@ -35,7 +36,7 @@ class BaseElement {
   }
 
   get pk() {
-    return this.hash && this.id && [this.hash, this.id];
+    return this.hash && this.id && [this.id, this.hash];
   }
 }
 
@@ -134,6 +135,7 @@ export class Collection {
     this.folders = { order: (type === 'job' ? folderTypes || ['phase', 'building'] : []), roots: {} };
     this.updateHash();
     this.modified = new Date();
+    this.created = new Date();
   }
 
   static props = ['name', 'shortname', 'description', 'type', 'owner', 'group', 'folders', 'basedOn'];  // what's tracked by git
@@ -176,7 +178,7 @@ export class Collection {
   }
 
   get pk() {
-    return this.hash && this.id && [this.hash, this.id];
+    return this.hash && this.id && [this.id, this.hash];
   }
 }
 
@@ -189,7 +191,10 @@ export class User {
     public name: string, 
     public email: string, 
     public groups: string[] = []
-  ) {}
+  ) {
+    this.modified = new Date();
+    this.created = new Date();
+  }
 
   get valid() {
     return (this.username && this.email && this.groups && this.name && true) || false;
@@ -209,7 +214,10 @@ export class Group {
   public modified: Date;
   public created: Date;
 
-  constructor(public shortname: string, public name: string) {}
+  constructor(public shortname: string, public name: string) {
+    this.modified = new Date();
+    this.created = new Date();
+  }
 
   get valid() {
     return true;
