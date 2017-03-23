@@ -29,6 +29,14 @@ function hashObject(type:string, body:string|Uint8Array) {
   }
 }
 
+interface DiffStatus {
+  id: string;
+  committed?: any;
+  staged?: any;
+  unstaged?: any;
+  type: string;
+}
+
 // task 1
 //   create job
 //   set active job
@@ -180,14 +188,14 @@ async function allCollectionsStatus() {
   return groups;
 }
 
-async function diffIndex(id, branchName='master') {
+async function diffIndex(repo, id, branchName='master', groupTypes = false) {
   let db = this.db;
 
   // shortname must never change
   let job = await db.collections.get({ id });
   if (!job) throw new Error('no job with that id');
 
-  let repo = await init(job.shortname, 'testing-git', 1);
+  //let repo = await init(job.shortname, 'testing-git', 1);
 
   let commitHash = await repo.readRef(branchName);
   
@@ -201,27 +209,98 @@ async function diffIndex(id, branchName='master') {
 
   if (!tree) throw new Error('inconsistent git status');
 
-  let folderTree = await repo.loadAs('tree', tree.folders.hash);
+  let staged = await db.collections.where({ id, state: 'staged' }).sortBy('modified');
+  if (staged.length > 1) throw new Error('duplicate elements (collections) staged (same id)');
+  staged = staged.length ? staged[0] : null;
 
-  let stagedFolders = (await db.folders.where({ job: id, state: 'staged' }).toArray()).sort(elCmp);
-  let stagedFolderIds = stagedFolders.map(({ id }) => id);
-  if (!stagedFolderIds.every((el, i, arr) => arr.indexOf(el) === i)) throw new Error('duplicate elements staged (same id)');
+  let committed = tree[id];
 
-  let indexFolders = stagedFolderIds.map(id => folderTree[id] && folderTree[id].hash);
+  let result: DiffStatus[] = [];
 
-  stagedFolders.map((el, i) => {
-    let index = indexFolders[i];
+  if (staged || committed) {
+    result.push({
+      id,
+      committed: committed ? { hash: committed.hash } : null,
+      staged: staged,
+      type: db.collections.name
+    });
+  }
 
-    return {
+  return result.concat(...await Promise.all([
+    stagedIndexed(db.folders,    id, await repo.loadAs('tree', tree.folders.hash)),
+    stagedIndexed(db.components, id, await repo.loadAs('tree', tree.components.hash)),
+    stagedIndexed(db.instances,  id, await repo.loadAs('tree', tree.instances.hash))
+  ]));
+}
+
+async function stagedIndexed(table, job, tree) {
+  let elements = (await table.where({ job, state: 'staged' }).toArray()).sort(elCmp);
+  let ids = elements.map(({ id }) => id);
+
+  if (!ids.every((id, i, arr) => arr.indexOf(id) === i)) throw new Error('duplicate elements staged (same id)');
+
+  let results: DiffStatus[] = [];
+
+  for (let f of elements) {
+    let id = f.id;
+    let c = tree[id];
+    results.push({
+      id,
+      staged: f,
+      committed: c ? { hash: c.hash } : null,
+      type: table.name
+    });
+  }
+
+  return results;
+}
+
+// debug only - slow
+async function resolveTree(repo, tree) {
+  for (let key in tree) {
+    let ob = tree[key];
+    let type = modes.toType(ob.mode);
+    if (type == 'blob') {
+      ob.value = JSON.parse(await repo.loadAs('text', ob.hash));
+    } else if (type == 'tree') {
+      ob.value = await repo.loadAs('tree', ob.hash);
+      await resolveTree(repo, ob.value);
     }
-  });
+  }
+}
 
-  console.log('hashes', indexFolders);
+async function commit(repo, job, message, branchName='master') {
+  let commitHash = await repo.readRef(branchName);
+  
+  if (!commitHash) throw new Error('that branch does not exist');
 
-  let cache = {};
+  let commit = await repo.loadAs('commit', commitHash);
 
-  // nah
-  //await allCollectionsStatus.call(this);
+  if (!commit) throw new Error('inconsistent git status');
+
+  let tree = await repo.loadAs('tree', commit.tree);
+
+  let diff = await diffIndex.call(this, repo, job, branchName);
+
+  let changes: any = [];
+
+  for (let change of diff) {
+    let ob:any = {};
+    ob.path = (change.type != 'collections' ? change.type + '/' : '') + change.id;
+    if (change.staged) {
+      ob.mode = modes.file;
+      ob.content = change.staged.toString();
+    }
+    changes.push(ob);
+  }
+
+  changes.base = commit.tree;
+
+  console.log('repo');
+  let treeHash = await repo.createTree(changes);
+
+  //await resolveTree(repo, mergedTree);
+
 }
 
 async function diffTree(jobId) {
@@ -233,16 +312,18 @@ async function diffTree(jobId) {
   let a = states.lastIndexOf('staged');
   let b = states.lastIndexOf('unstaged');
 
-  let result = {};
+  let result: DiffStatus[] = [];
 
   if (a > -1 || b > -1) {
-    result[jobId] = {
+    result.push({
+      id: jobId,
       staged: a > -1 ? versions[a] : null,
-      unstaged: b > a ? versions[b] : null
-    }
+      unstaged: b > a ? versions[b] : null,
+      type: 'collections'
+    });
   }
 
-  return Object.assign(result, ...await Promise.all([
+  return result.concat(...await Promise.all([
     stagedUnstaged(db.folders, jobId),
     stagedUnstaged(db.components, jobId),
     stagedUnstaged(db.instances, jobId)
@@ -251,21 +332,24 @@ async function diffTree(jobId) {
 
 var elCmp = compare(['id', 'modified', 'state']);
 
-async function stagedUnstaged(collection, job) {
-  let arr = (await collection.where('[job+state]').anyOf([job, 'staged'], [job, 'unstaged']).toArray()).sort(elCmp);
+async function stagedUnstaged(table, job) {
+  let arr = (await table.where('[job+state]').anyOf([job, 'staged'], [job, 'unstaged']).toArray()).sort(elCmp);
   let ids = arr.map(({ id }) => id);
-  let groups = {};
+  let groups = [];
   for (let i=0; i < arr.length;) {
     let id = arr[i].id;
     let group = arr.slice(i, i = ids.lastIndexOf(ids[i]) + 1);
     let states = group.map(({ state }) => state);
     let a = states.lastIndexOf('staged');
     let b = states.lastIndexOf('unstaged');
-    groups[id] = {
+    groups.push({
+      id,
       staged: a > -1 ? group[a] : null,
-      unstaged: b > a ? group[b] : null
-    }
+      unstaged: b > a ? group[b] : null,
+      type: table.name
+    });
   }
+
   return groups;
 }
 
@@ -288,6 +372,79 @@ async function descendants(table, rootId, includeRoot = false) {
   }
 
   return { ids, docs };
+}
+
+async function createTree(repo, entries) {
+  if (!Array.isArray(entries)) {
+    entries = Object.keys(entries).map((path) => Object.assign(entries[path], { path }));
+  }
+
+  let base = entries.base
+
+  let tree = entries.base && await repo.loadAs('tree', entries.base) || {};
+
+  let blobs = {};
+
+  for (let entry of entries) {
+    let fullpath = entry.path;
+    let i = fullpath.lastIndexOf('/');
+    let [path, fname] = [fullpath.substring(0, i), fullpath.substring(i + 1)];
+    let split = path.split('/');
+    let prev = tree;
+    for (let j=0; j < split.length; j++) {
+      let dirname = split[j];
+      let ob = prev[dirname];
+      if (ob && ob.mode && ob.hash) {
+        // assumption that this is a tree (dirname not a fname of something else)
+        prev = prev[dirname] = await repo.loadAs('tree', ob.hash);
+      } else if (dirname != '') {
+        prev = (prev[dirname] || {});
+      }
+    }
+    // if added / modified
+    if (entry.mode) {
+      prev[fname] = entry;
+      blobs[fullpath] = { content: entry.content, mode: entry.mode };
+    }
+    // if removed (may not have existed, though)
+    else {
+      delete prev[fname];
+    }
+  }
+
+  let paths = Object.keys(blobs);
+  await Promise.all(paths.map(async(path) => {
+    let { content, mode } = blobs[path];
+    blobs[path] = { hash: await repo.saveAs(modes.toType(mode), content), mode };
+  }));
+
+  async function create(root) {
+    for (let prop in root) {
+      let val = root[prop];
+      // already hashed, good
+      if (val.mode && val.hash) {
+
+      }
+
+      // replace with hash calculated above
+      else if (val.mode && val.path) {
+        root[prop] = blobs[val.path]
+
+      }
+
+      // replace with tree calculation
+      else {
+        root[prop] = { hash: await create(root[prop]), mode: modes.tree };
+
+      }
+    }
+
+    let hash = await repo.saveAs('tree', root);
+
+    return hash;
+  }
+
+  let treeHash = await create(tree);
 }
 
 async function createRepo(jobId, branchName = 'master') {
@@ -379,7 +536,6 @@ async function task1() {
   //   add to staging
   //   commit second
 
-
   // create
   let result = await createObjects.call(this);
 
@@ -392,7 +548,7 @@ async function task1() {
   await db.instances.where('[id+hash]').anyOf(result.instances.map(f=>f.pk)).modify({ state: 'staged' });
 
   // create repo from staged
-  await createRepo.call(this, result.collection.id);
+  let repo = await createRepo.call(this, result.collection.id);
   // elements should now be marked 'committed'
 
   let job = result.collection;
@@ -401,32 +557,35 @@ async function task1() {
   let testFolder = new FolderElement(job.id, `TEST FOLDER ${ Math.floor(Math.random()*100) }`, '', parentFolder.type, parentFolder.id);
   await db.folders.add(testFolder);
 
-  console.log('f', testFolder);
+  console.log('f1', testFolder);
 
   console.log(await diffTree.call(this, job.id));
+
+  // change some stuff
+  let anotherFolder = await db.folders.where({ job: job.id, state: 'committed' }).filter(f => f.name != 'root').first();
+
+  anotherFolder.name = anotherFolder.name + ' TEST';
+  anotherFolder.modified = new Date();
+  anotherFolder.state = 'staged'
+  anotherFolder.updateHash();
+
+  await db.folders.put(anotherFolder);
 
   testFolder.state = 'staged';
   await db.folders.put(testFolder);
 
+  job.name + ' TEST TEST'
+  job.modified = new Date();
+  job.state = 'staged';
+  job.updateHash();
+  await db.collections.put(job);
+
+  // check status
   console.log(await diffTree.call(this, job.id));
 
-  console.log(await diffIndex.call(this, job.id));
+  console.log(await diffIndex.call(this, repo, job.id));
 
-
-
-  /*
-  let db = this.db;
-
-  let job = await db.collections.orderBy('[id+modified+state]').last();
-  console.log('job', job);
-
-  await createRepo.call(this, job.id);
-
-  let s = await diffIndex.call(this, job.id);
-
-  console.log(s);
-
-  */
+  await commit.call(this, repo, job.id, 'new test commit');
 
 }
 
